@@ -147,7 +147,7 @@ class AgentDQN(Agent):
 
     def save(self, save_path):
         print('save model to', save_path)
-        model = {'online': self.online_net.state_dict(), 'target': self.self.target_net.state_dict()}
+        model = {'online': self.online_net.state_dict(), 'target': self.target_net.state_dict()}
         torch.save(model, save_path)
 
     def load(self, load_path):
