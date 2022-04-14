@@ -211,6 +211,15 @@ class AgentDQN(Agent):
         episodes_done_num = 1 # passed episodes
         total_reward = [] # compute average reward
         total_loss = []
+
+        save_data = "SAVE_PATH" in os.environ
+        if save_data:
+            save_path = os.environ["SAVE_PATH"]
+            print("SAVING DATA TO", save_path)
+            os.makedirs(save_path, exist_ok=True)
+            buffer_len = 1000
+            save_buffer = []
+
         while(True):
             state = self.env.reset()
             # State: (80,80,4) --> (1,4,80,80)
@@ -228,6 +237,22 @@ class AgentDQN(Agent):
                 # process new state
                 next_state = torch.from_numpy(next_state).permute(2,0,1).unsqueeze(0)
                 next_state = next_state.cuda() if use_cuda else next_state
+
+                if save_data:
+                    import pickle
+                    save = {
+                        "state": state, "action": action, "reward": reward,
+                        "next_state": next_state, "done": done,
+                        "episodes_done_num": episodes_done_num, "step": self.steps,
+                    }
+                    save_buffer.append(save)
+                    if len(save_buffer) >= buffer_len:
+                        filepath = os.path.join(save_path, f"transition{self.steps}.pkl")
+                        with open(filepath, "wb") as f:
+                            pickle.dump(save_buffer, f)
+                        print("DUMPED TO", filepath)
+                        save_buffer = []
+
                 # TODO:
                 # store the transition in memory
                 self.memory.add(state, action, reward, next_state, done)
