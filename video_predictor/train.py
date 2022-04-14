@@ -8,11 +8,11 @@ import video_predictor.model
 
 
 DATA_PATH = "/data/ppatil32/atari_data"
-NUM_WORKERS = 8
+NUM_WORKERS = 4
 
 NUM_STEPS = 10**5
-BATCH_SIZE = 32
-VAL_EVERY = 10**2
+BATCH_SIZE = 128
+VAL_EVERY = 3 * 10**2
 
 
 def parse_args():
