@@ -243,10 +243,13 @@ class AgentDQN(Agent):
                 if save_data:
                     import pickle
                     save = {
-                        "state": state.cpu().numpy(), "action": action.cpu().numpy(),
-                        "reward": reward.cpu().numpy(),
-                        "next_state": next_state.cpu().numpy(), "done": done.cpu().numpy(),
-                        "episodes_done_num": episodes_done_num, "step": self.steps,
+                        "state":                state.cpu().numpy(), 
+                        "next_state":           next_state.cpu().numpy(), 
+                        "action":               action,
+                        "reward":               reward,
+                        "done":                 done,
+                        "episodes_done_num":    episodes_done_num, 
+                        "step":                 self.steps,
                     }
                     save_buffer.append(save)
                     if len(save_buffer) >= buffer_len:

@@ -7,7 +7,7 @@ import video_predictor.data
 import video_predictor.model
 
 
-DATA_PATH = "/data/ppatil32/atari_data"
+
 NUM_WORKERS = 4
 
 NUM_STEPS = 10**5
@@ -19,6 +19,7 @@ def parse_args():
     ap = argparse.ArgumentParser()
 
     ap.add_argument("--save-dir", type=str, required=True)
+    ap.add_argument("--data-dir", type=str, required=True)
 
     return ap.parse_args()
 
@@ -44,8 +45,8 @@ def main(args):
     model = video_predictor.model.get_video_predictor()
     model = model.cuda()
 
-    train_dataset = video_predictor.data.AtariDataset(f"{DATA_PATH}/train")
-    test_dataset = video_predictor.data.AtariDataset(f"{DATA_PATH}/test")
+    train_dataset = video_predictor.data.AtariDataset(f"{args.data_dir}/train")
+    test_dataset = video_predictor.data.AtariDataset(f"{args.data_dir}/test")
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS,
         multiprocessing_context="spawn")
