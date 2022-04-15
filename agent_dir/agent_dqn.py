@@ -212,6 +212,7 @@ class AgentDQN(Agent):
         total_reward = [] # compute average reward
         total_loss = []
 
+        # TODO(piyush) remove
         save_data = "SAVE_PATH" in os.environ
         if save_data:
             save_path = os.environ["SAVE_PATH"]
@@ -238,11 +239,12 @@ class AgentDQN(Agent):
                 next_state = torch.from_numpy(next_state).permute(2,0,1).unsqueeze(0)
                 next_state = next_state.cuda() if use_cuda else next_state
 
+                # TODO(piyush) remove
                 if save_data:
                     import pickle
                     save = {
-                        "state": state, "action": action, "reward": reward,
-                        "next_state": next_state, "done": done,
+                        "state": state.numpy(), "action": action.numpy(), "reward": reward.numpy(),
+                        "next_state": next_state.numpy(), "done": done.numpy(),
                         "episodes_done_num": episodes_done_num, "step": self.steps,
                     }
                     save_buffer.append(save)
