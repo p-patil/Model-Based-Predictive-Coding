@@ -1,29 +1,74 @@
+import concurrent.futures
 import pickle
+import random
+import time
 from pathlib import Path
 
 import torch
+import tqdm
 
 
-DATA_PER_FILE = 1000
+BLOCK_LEN = 1000
 
 
 class AtariDataset(torch.utils.data.Dataset):
-    def __init__(self, data_path):
+    def __init__(self, data_path, batch_size=32, shuffle=False):
         self.data_path = Path(data_path)
+        self.batch_size = batch_size
         assert self.data_path.is_dir()
 
         self.data_files = list(self.data_path.glob("*"))
+        if shuffle:
+            random.shuffle(self.data_files)
 
-    def __getitem__(self, idx):
-        file_idx, data_idx = idx // DATA_PER_FILE, idx % DATA_PER_FILE
-        with open(self.data_files[file_idx], "rb") as f:
-            data = pickle.load(f)
+        self.cache_len = batch_size
+        self.cache_index = 0
+        self.block_index = 0
+        self.cache = []
+        self.reload_cache(self.cache_len)
 
-        if data_idx == DATA_PER_FILE - 1:
-            data_idx -= 1
-        past, future = data[data_idx], data[data_idx + 1]
+    def reload_cache(self, cache_size, multithread=False):
+        def read_block_file(filename):
+            with open(filename, "rb") as f:
+                block = pickle.load(f)
+            assert len(block) == BLOCK_LEN
+            return block
 
-        return {"past": past, "future": future}
+        print("Reloading cache... ", end="")
+        start = time.time()
+        if multithread:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = [
+                    executor.submit(read_block_file, self.data_files[i])
+                    for i in range(self.cache_index, self.cache_index + self.batch_size)
+                ]
+            self.cache = [future.result() for future in tqdm.tqdm(futures)]
+        else:
+            self.cache = [
+                read_block_file(self.data_files[i])
+                for i in tqdm.tqdm(range(self.cache_index, self.cache_index + self.batch_size))
+            ]
+        end = time.time()
+        print(f"Done ({end - start} sec)")
+
+        self.cache_index += self.batch_size
+        if self.cache_index >= len(self.data_files):
+            print("Finished a full pass over dataset")
+            self.cache_index = 0
+            self.reload_cache(self.cache_len)
+
+    def next_batch(self):
+        batch = torch.tensor([
+            block[self.block_index]
+            for i, block in enumerate(self.cache)
+        ])
+
+        self.block_index += 1
+        if self.block_index == BLOCK_LEN:
+            self.reload_cache(self.cache_len)
+            self.block_index = 0
+
+        return batch
 
     def __len__(self):
-        return len(self.data_files) * DATA_PER_FILE
+        return len(self.data_files) * BLOCK_LEN

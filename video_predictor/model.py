@@ -84,7 +84,10 @@ class VideoPredictor(nn.Module):
         return loss
 
 
-def get_video_predictor():
+def get_video_predictor(pretrain=True, small=False):
+    if small:
+        raise NotImplementedError() # TODO(piyush) Implement small model
+
     cfg = Config.fromfile(CONFIG_FILE)
 
     cfg.work_dir = WORK_DIR
@@ -99,9 +102,10 @@ def get_video_predictor():
     mmcv.mkdir_or_exist(osp.abspath(cfg.work_dir))
 
 
-    # cfg.model.backbone.pretrained = PRETRAIN_PATH
-    cfg.load_from = PRETRAIN_PATH
-    cfg.model.backbone.use_checkpoint = True
+    if pretrain:
+        # cfg.model.backbone.pretrained = PRETRAIN_PATH
+        cfg.load_from = PRETRAIN_PATH
+        cfg.model.backbone.use_checkpoint = True
 
     model = VideoPredictor(cfg)
 
