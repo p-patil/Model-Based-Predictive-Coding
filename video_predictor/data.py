@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import torch
+import numpy as np
 import tqdm
 
 
@@ -58,10 +59,11 @@ class AtariDataset(torch.utils.data.Dataset):
             self.reload_cache(self.cache_len)
 
     def next_batch(self):
-        batch = torch.tensor([
-            block[self.block_index]
-            for i, block in enumerate(self.cache)
-        ])
+        batch = [block[self.block_index] for i, block in enumerate(self.cache)]
+        batch = {
+            key: torch.tensor(np.asarray([data_point[key] for data_point in batch]))
+            for key in batch[0].keys()
+        }
 
         self.block_index += 1
         if self.block_index == BLOCK_LEN:

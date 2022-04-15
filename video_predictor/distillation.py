@@ -11,7 +11,7 @@ NUM_STEPS = 10**5
 BATCH_SIZE = 128
 VAL_EVERY = 3 * 10**2
 NUM_TEST_BATCHES = 128
-
+DISTILLATION_PROB = 0.9
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -61,7 +61,10 @@ def main(args):
         x = batch["past"]["state"].repeat((1, 3, 1, 1, 1))  # 3 channels
 
         pred_frame, pred_reward = model.forward(x, action=batch["past"]["action"])
-        target_frame, target_reward = teacher_model.forward(x, action=batch["past"]["action"])
+        if random.random() <= DISTILLATION_PROB:
+            target_frame, target_reward = teacher_model.forward(x, action=batch["past"]["action"])
+        else:
+            target_frame, target_reward = batch["future"]["state"], batch["future"]["reward"]
         loss = (torch.square(pred_frame - target_frame).mean() +
                 torch.square(pred_reward - target_reward).mean())
         model.optimizer.zero_grad()

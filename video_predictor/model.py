@@ -1,21 +1,22 @@
 import os
 import os.path as osp
+import re
 
-import mmcv
 import torch
 import torch.nn as nn
 
 import sys
 sys.path.insert(0, "Video-Swin-Transformer/")
+import mmcv
 from mmaction.models import build_model
 from mmcv import Config
-from mmcv.runner import build_optimizer
+from mmcv.runner import build_optimizer, load_state_dict
 
 
 # TODO(piyush) This model's output feature map is 3x3 which seems really small.
 CONFIG_FILE = "~/Model-Based-Predictive-Coding/Video-Swin-Transformer/configs/recognition/swin/swin_base_patch244_window1677_sthv2.py"
 WORK_DIR = "work_dir"
-PRETRAIN_PATH = "Video-Swin-Transformer/pretrain/swin_base_patch244_window1677_kinetics400_22k.pth"
+PRETRAIN_PATH = "pretrain/swin_base_patch244_window1677_kinetics400_22k.pth"
 
 
 class VideoPredictor(nn.Module):
@@ -84,7 +85,7 @@ class VideoPredictor(nn.Module):
         return loss
 
 
-def get_video_predictor(pretrain=True, small=False):
+def get_video_predictor(distributed=False, pretrain=True, small=False):
     if small:
         raise NotImplementedError() # TODO(piyush) Implement small model
 
@@ -101,14 +102,36 @@ def get_video_predictor(pretrain=True, small=False):
     # create work_dir
     mmcv.mkdir_or_exist(osp.abspath(cfg.work_dir))
 
-
+    # Get state dict for pretrained weights
+    state_dict = {}
     if pretrain:
-        # cfg.model.backbone.pretrained = PRETRAIN_PATH
-        cfg.load_from = PRETRAIN_PATH
         cfg.model.backbone.use_checkpoint = True
+        checkpoint = torch.load(PRETRAIN_PATH)
+        # OrderedDict is a subclass of dict
+        if not isinstance(checkpoint, dict):
+            raise RuntimeError(
+                f'No state_dict found in checkpoint file {filename}')
+        # get state_dict from checkpoint
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
+        # strip prefix of state_dict
+        revise_keys = [(r'^module\.', '')]
+        for p, r in revise_keys:
+            state_dict = {re.sub(p, r, k): v for k, v in state_dict.items()}
 
+    # Create model 
     model = VideoPredictor(cfg)
+    if state_dict:
+        load_state_dict(model.featurizer, state_dict)
+    else:
+        print("Failed to use pretrain state dict")
 
+
+    # distributed
+    if distributed:
+        model = nn.DataParallel(model, gpu_ids = [3, 4])
     return model
 
 
