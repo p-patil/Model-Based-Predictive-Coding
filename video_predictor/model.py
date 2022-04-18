@@ -82,10 +82,10 @@ class VideoPredictor(nn.Module):
         loss.backward()
         self.optimizer.step()
 
-        return loss
+        return loss.item()
 
 
-def get_video_predictor(distributed=False, pretrain=True, small=False):
+def get_video_predictor(chkpt=None, distributed=True, pretrain=True, small=False):
     if small:
         raise NotImplementedError() # TODO(piyush) Implement small model
 
@@ -102,48 +102,32 @@ def get_video_predictor(distributed=False, pretrain=True, small=False):
     # create work_dir
     mmcv.mkdir_or_exist(osp.abspath(cfg.work_dir))
 
-    # Get state dict for pretrained weights
-    state_dict = {}
-    if pretrain:
-        cfg.model.backbone.use_checkpoint = True
+    # Create model.
+    model = VideoPredictor(cfg)
+
+    if chkpt is not None:
+        print(f"Loading weights from checkpoint: {chkpt}")
+        model.load_state_dict(torch.load(chkpt))
+    elif pretrain:
+        print("Using pretrained weights")
         checkpoint = torch.load(PRETRAIN_PATH)
+
         # OrderedDict is a subclass of dict
         if not isinstance(checkpoint, dict):
             raise RuntimeError(
                 f'No state_dict found in checkpoint file {filename}')
-        # get state_dict from checkpoint
-        if 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-        else:
-            state_dict = checkpoint
-        # strip prefix of state_dict
+
+        state_dict = checkpoint.get("state_dict", checkpoint)
+
+        # Strip prefix of state_dict.
         revise_keys = [(r'^module\.', '')]
         for p, r in revise_keys:
             state_dict = {re.sub(p, r, k): v for k, v in state_dict.items()}
 
-    # Create model 
-    model = VideoPredictor(cfg)
-    if state_dict:
         load_state_dict(model.featurizer, state_dict)
     else:
         print("Failed to use pretrain state dict")
 
-
-    # distributed
     if distributed:
         model = nn.DataParallel(model, gpu_ids = [3, 4])
     return model
-
-
-# imgs = torch.rand(32, 3, 4, 224, 224)
-# y = torch.rand(32, 3, 224, 224)
-# model = get_video_predictor()
-
-# imgs = imgs.to("cuda")
-# y = y.to("cuda")
-# model = model.to("cuda")
-
-# for i in range(1000):
-    # loss = model.step(imgs, y)
-    # if i % 25 == 0:
-        # print(i, loss.item())

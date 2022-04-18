@@ -4,8 +4,8 @@ import random
 import time
 from pathlib import Path
 
-import torch
 import numpy as np
+import torch
 import tqdm
 
 
@@ -13,7 +13,7 @@ BLOCK_LEN = 1000
 
 
 class AtariDataset(torch.utils.data.Dataset):
-    def __init__(self, data_path, batch_size=32, shuffle=False):
+    def __init__(self, data_path, batch_size=32, shuffle=False, limit=None):
         self.data_path = Path(data_path)
         self.batch_size = batch_size
         assert self.data_path.is_dir()
@@ -21,6 +21,9 @@ class AtariDataset(torch.utils.data.Dataset):
         self.data_files = list(self.data_path.glob("*"))
         if shuffle:
             random.shuffle(self.data_files)
+        if limit is not None:
+            print(f"Only using {limit} data blocks")
+            self.data_files = self.data_files[: limit]
 
         self.cache_len = batch_size
         self.cache_index = 0
@@ -46,8 +49,9 @@ class AtariDataset(torch.utils.data.Dataset):
             self.cache = [future.result() for future in tqdm.tqdm(futures)]
         else:
             self.cache = [
-                read_block_file(self.data_files[i])
-                for i in tqdm.tqdm(range(self.cache_index, self.cache_index + self.batch_size))
+                read_block_file(filepath)
+                for filepath in tqdm.tqdm(self.data_files[self.cache_index :
+                                                          self.cache_index + self.cache_len])
             ]
         end = time.time()
         print(f"Done ({end - start} sec)")
@@ -59,10 +63,10 @@ class AtariDataset(torch.utils.data.Dataset):
             self.reload_cache(self.cache_len)
 
     def next_batch(self):
-        batch = [block[self.block_index] for i, block in enumerate(self.cache)]
-        batch = {
-            key: torch.tensor(np.asarray([data_point[key] for data_point in batch]))
-            for key in batch[0].keys()
+        samples = [block[self.block_index] for block in self.cache]
+        batch =  {
+            key: torch.from_numpy(np.array([sample[key] for sample in samples]))
+            for key in samples[0].keys()
         }
 
         self.block_index += 1
