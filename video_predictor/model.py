@@ -13,10 +13,11 @@ from mmcv import Config
 from mmcv.runner import build_optimizer, load_state_dict
 
 
-# TODO(piyush) This model's output feature map is 3x3 which seems really small.
-CONFIG_FILE = "~/Model-Based-Predictive-Coding/Video-Swin-Transformer/configs/recognition/swin/swin_base_patch244_window1677_sthv2.py"
 WORK_DIR = "work_dir"
+CONFIG_FILE = "~/Model-Based-Predictive-Coding/Video-Swin-Transformer/configs/recognition/swin/swin_base_patch244_window1677_sthv2.py"
 PRETRAIN_PATH = "pretrain/swin_base_patch244_window1677_kinetics400_22k.pth"
+SMALL_CONFIG_FILE = "~/Model-Based-Predictive-Coding/Video-Swin-Transformer/configs/recognition/swin/swin_tiny_patch244_window877_kinetics400_1k.py"
+SMALL_PRETRAIN_PATH = "pretrain/swin_tiny_patch244_window877_kinetics400_1k.pth"
 
 
 class VideoPredictor(nn.Module):
@@ -85,11 +86,11 @@ class VideoPredictor(nn.Module):
         return loss.item()
 
 
-def get_video_predictor(chkpt=None, distributed=True, pretrain=True, small=False):
+def get_video_predictor(chkpt=None, distributed=False, pretrain=True, small=False):
     if small:
-        raise NotImplementedError() # TODO(piyush) Implement small model
-
-    cfg = Config.fromfile(CONFIG_FILE)
+        cfg = Config.fromfile(SMALL_CONFIG_FILE)
+    else:
+        cfg = Config.fromfile(CONFIG_FILE)
 
     cfg.work_dir = WORK_DIR
 
@@ -107,10 +108,13 @@ def get_video_predictor(chkpt=None, distributed=True, pretrain=True, small=False
 
     if chkpt is not None:
         print(f"Loading weights from checkpoint: {chkpt}")
-        model.load_state_dict(torch.load(chkpt))
+        model.load_state_dict(torch.load(chkpt), strict=False)
     elif pretrain:
         print("Using pretrained weights")
-        checkpoint = torch.load(PRETRAIN_PATH)
+        if small:
+            checkpoint = torch.load(SMALL_PRETRAIN_PATH)
+        else:
+            checkpoint = torch.load(PRETRAIN_PATH)
 
         # OrderedDict is a subclass of dict
         if not isinstance(checkpoint, dict):
