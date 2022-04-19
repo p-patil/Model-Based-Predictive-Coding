@@ -99,9 +99,8 @@ def main(args):
             if args.distributed:
                 raise NotImplementedError()
             else:
-                pred_frame, pred_reward = model.forward(x, action=batch["past"]["action"])
-                target_frame, target_reward = teacher_model.forward(
-                    x, action=batch["past"]["action"])
+                pred_frame, pred_reward = model.forward(x, action=batch["action"])
+                target_frame, target_reward = teacher.forward(x, action=batch["action"])
                 loss = (1 - args.gt_weight) * (torch.square(pred_frame - target_frame).mean() +
                                                torch.square(pred_reward - target_reward).mean())
                 loss += args.gt_weight * (torch.square(pred_frame - batch["next_state"]).mean() +
@@ -109,6 +108,8 @@ def main(args):
                 model.optimizer.zero_grad()
                 loss.backward()
                 model.optimizer.step()
+
+                loss = loss.item()
         else:
             if args.distributed:
                 loss = model.module.step(x, y, action=batch["action"], reward=batch["reward"])

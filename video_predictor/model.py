@@ -24,15 +24,14 @@ class VideoPredictor(nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        self.swin_dim = 1024 * 2
-
         self.featurizer = build_model(
             cfg.model,
             train_cfg=cfg.get('train_cfg'),
             test_cfg=cfg.get('test_cfg'))
+        self.swin_dim = self.featurizer.cls_head.fc_cls.in_features * 2
 
         self.action_encoder = nn.Sequential(
-            nn.Linear(1, 2048),
+            nn.Linear(1, self.swin_dim),
             nn.ReLU(),
         )
         self.decoder = nn.Sequential(
