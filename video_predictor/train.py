@@ -1,4 +1,5 @@
 import argparse
+import random
 from pathlib import Path
 
 import torch
@@ -14,10 +15,13 @@ def parse_args():
 
     ap.add_argument("--device", type=str, default="cuda:0")
     ap.add_argument("--save-dir", type=str, required=True)
-    ap.add_argument("--data-path", type=str, default="/data/ppatil32/atari_data")
+    ap.add_argument("--data-path", type=str, default="../atari_data")
     ap.add_argument("--distributed", type=bool, default=False)
     ap.add_argument("--checkpoint", type=str, default=None)
     ap.add_argument("--limit", type=int, default=None)
+
+    ap.add_argument("--distillation", action="store_true", default=False)
+    ap.add_argument("--gt-weight", type=float, default=0.0)
 
     ap.add_argument("--num-steps", type=int, default=10**5)
     ap.add_argument("--num-test-batches", type=int, default=128)
@@ -51,7 +55,14 @@ def main(args):
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    model = video_predictor.model.get_video_predictor(chkpt=args.checkpoint)
+    if args.distillation:
+        print(f"Running distillation with ground truth weight: {args.gt_weight}")
+        assert args.checkpoint is not None
+        teacher = video_predictor.model.get_video_predictor(chkpt=args.checkpoint)
+        teacher.eval()
+        model = video_predictor.model.get_video_predictor(small=True)
+    else:
+        model = video_predictor.model.get_video_predictor(chkpt=args.checkpoint)
 
     # Distributed training. TODO
     if args.distributed:
@@ -61,7 +72,10 @@ def main(args):
             model,
             # device_ids=[
         )
+
     model = model.to(args.device)
+    if args.distillation:
+        teacher = teacher.to(args.device)
 
     train_dataset = video_predictor.data.AtariDataset(
         f"{args.data_path}/train", batch_size=args.batch_size, shuffle=True, limit=args.limit)
@@ -80,10 +94,26 @@ def main(args):
         # States have shape (batch_size, num_channels, num_frames, height, width).
         x = batch["state"].repeat((1, 3, 1, 1, 1))  # 3 channels
         y = batch["next_state"].squeeze()
-        if args.distributed:
-            loss = model.module.step(x, y, action=batch["action"], reward=batch["reward"])
+
+        if args.distillation:
+            if args.distributed:
+                raise NotImplementedError()
+            else:
+                pred_frame, pred_reward = model.forward(x, action=batch["past"]["action"])
+                target_frame, target_reward = teacher_model.forward(
+                    x, action=batch["past"]["action"])
+                loss = (1 - args.gt_weight) * (torch.square(pred_frame - target_frame).mean() +
+                                               torch.square(pred_reward - target_reward).mean())
+                loss += args.gt_weight * (torch.square(pred_frame - batch["next_state"]).mean() +
+                                          torch.square(pred_reward - batch["reward"]).mean())
+                model.optimizer.zero_grad()
+                loss.backward()
+                model.optimizer.step()
         else:
-            loss = model.step(x, y, action=batch["action"], reward=batch["reward"])
+            if args.distributed:
+                loss = model.module.step(x, y, action=batch["action"], reward=batch["reward"])
+            else:
+                loss = model.step(x, y, action=batch["action"], reward=batch["reward"])
 
         step += 1
         pbar.update(1)
