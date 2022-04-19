@@ -30,6 +30,11 @@ class VideoPredictor(nn.Module):
             cfg.model,
             train_cfg=cfg.get('train_cfg'),
             test_cfg=cfg.get('test_cfg'))
+
+        self.action_encoder = nn.Sequential(
+            nn.Linear(1, 2048),
+            nn.ReLU(),
+        )
         self.decoder = nn.Sequential(
             # Block 1
             nn.ConvTranspose2d(in_channels=self.swin_dim, out_channels=self.swin_dim // 4,
@@ -56,11 +61,17 @@ class VideoPredictor(nn.Module):
         # TODO(piyush) Use our own optimizer?
         self.optimizer = build_optimizer(self, cfg.optimizer)
 
-    def forward(self, x, action=None):
-        x = self.featurizer.extract_feat(x)  # (32, 1024, 2, 7, 7)
+    def encode(self, x):
+        x = self.featurizer.extract_feat(x)  # (32, 1024, 2, 3, 3)
         x = x.reshape(x.shape[0], -1, *x.shape[3:])
+        return x
+
+    def decode(self, x, action=None):
         if action is not None:
-            pass  # TODO(piyush)
+            action = action.unsqueeze(1).float()
+            action_embedding = self.action_encoder(action) # shape (batch_size, 2048)
+            x = action_embedding.unsqueeze(-1).unsqueeze(-1) * x
+
         x = self.decoder(x)
 
         # Crop 84x84 image from center.
@@ -71,6 +82,9 @@ class VideoPredictor(nn.Module):
         pred_frame, pred_reward = x[:, :-1, ...], x[:, -1, ...]
         pred_reward = pred_reward.reshape(*pred_reward.shape[:-2], -1).mean(dim=-1)  # GAP
         return pred_frame, pred_reward
+
+    def forward(self, x, action=None):
+        return self.decode(self.encode(x), action=action)
 
     def step(self, x, next_frame, action=None, reward=None):
         pred_frame, pred_reward = self.forward(x, action=action)
