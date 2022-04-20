@@ -44,6 +44,7 @@ class DQN(nn.Module):
         if "VP" in os.environ:
             self.vp_transform = nn.ConvTranspose2d(
                 in_channels=2048, out_channels=64, kernel_size=7)
+            self.conv3 = nn.Conv2d(128, 64, kernel_size=3, stride=1)
 
     # TODO(piyush) remove
     def forward(self, x, state_embeddings=None):
@@ -51,7 +52,7 @@ class DQN(nn.Module):
         x = self.relu(self.conv2(x))
         if state_embeddings is not None:
             emb = self.vp_transform(state_embeddings)
-            x = x + emb
+            x = torch.concat([x, emb], dim=1)
         x = self.relu(self.conv3(x))
         x = self.lrelu(self.fc(x.view(x.size(0), -1)))
         if self.duel_net:
