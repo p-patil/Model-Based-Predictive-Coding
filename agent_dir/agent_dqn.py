@@ -41,9 +41,17 @@ class DQN(nn.Module):
             self.fc_value = nn.Linear(512, 1)
             self.fc_advantage = nn.Linear(512, num_actions)
 
-    def forward(self, x):
+        if "VP" in os.environ:
+            self.vp_transform = nn.ConvTranspose2d(
+                in_channels=2048, out_channels=64, kernel_size=7)
+
+    # TODO(piyush) remove
+    def forward(self, x, state_embeddings=None):
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
+        if state_embeddings is not None:
+            emb = self.vp_transform(state_embeddings)
+            x = x + emb
         x = self.relu(self.conv3(x))
         x = self.lrelu(self.fc(x.view(x.size(0), -1)))
         if self.duel_net:
@@ -119,6 +127,24 @@ class AgentDQN(Agent):
         else:
             raise Exception('--dqn_type must in [DQN, DoubleDQN, DuelDQN, DDDQN]')
 
+        # TODO(piyush) remove
+        if "VP" in os.environ:
+            import video_predictor.model
+            self.video_predictor = video_predictor.model.get_video_predictor(chkpt=os.environ["VP"])
+            if use_cuda:
+                self.video_predictor = self.video_predictor.cuda()
+            print("CREATED VIDEO PREDICTOR")
+
+            self.finetune_vp = "FT" in os.environ
+            if self.finetune_vp:
+                print("FINE TUNING VIDEO PREDICTOR")
+                self.video_predictor.train()
+            else:
+                self.video_predictor.eval()
+        else:
+            print("NOT USING VIDEO PREDICTOR")
+            self.video_predictor = None
+
         if args.test_dqn:
             self.load(args.model_path)
         
@@ -167,16 +193,18 @@ class AgentDQN(Agent):
         else:
             return self.eps_min + (self.eps_max - self.eps_min) * ((self.eps_step - step) / self.eps_step)
 
-    def make_action(self, state, test=False):
+    def make_action(self, state, test=False, state_embeddings=None):
         if test:
             state = torch.from_numpy(state).permute(2,0,1).unsqueeze(0)
             state = state.cuda() if use_cuda else state
             with torch.no_grad():
-                action = self.online_net(state).max(1)[1].item()
+                # TODO(piyush) remove
+                action = self.online_net(state, state_embeddings=state_embeddings).max(1)[1].item()
         else:            
             if random.random() > self.epsilon(self.steps):  
                 with torch.no_grad():
-                    action = self.online_net(state).max(1)[1].item()
+                    # TODO(piyush) remove
+                    action = self.online_net(state, state_embeddings=state_embeddings).max(1)[1].item()
             else:
                 action = random.randrange(self.num_actions)
 
@@ -189,15 +217,30 @@ class AgentDQN(Agent):
         experiences = self.memory.sample()
         batch_state, batch_action, batch_reward, batch_next, batch_done, = experiences
 
+        # TODO(piyush) remove
+        state_embeddings = None
+        if self.video_predictor:
+            state_embeddings = self.video_predictor.encode(batch_state.unsqueeze(1).repeat(((1, 3, 1, 1, 1))))
+            if self.finetune_vp:
+                pred_frame, pred_reward = self.video_predictor.decode(
+                    state_embeddings, action=action)
+                vp_loss = (torch.square(pred_frame - batch_next).mean() +
+                           torch.square(pred_reward - batch_reward).mean())
+                self.video_predictor.optimizer.zero_grad()
+                vp_loss.backward()
+                self.video_predictor.optimizer.step()
+
+        # TODO(piyush) Do we need to add state embeddings here?
         if self.dqn_type=='DoubleDQN' or self.dqn_type == 'DDDQN':
-            next_q_actions = self.online_net(batch_next).detach().max(1)[1].unsqueeze(1)
-            next_q_values = self.target_net(batch_next).gather(1,next_q_actions)
+            next_q_actions = self.online_net(batch_next, state_embeddings=state_embeddings).detach().max(1)[1].unsqueeze(1)
+            next_q_values = self.target_net(batch_next, state_embeddings=state_embeddings).gather(1,next_q_actions)
         else:
-            next_q_values =  self.target_net(batch_next).detach()
+            next_q_values =  self.target_net(batch_next, state_embeddings=state_embeddings).detach()
             next_q_values = next_q_values.max(1)[0].unsqueeze(1)
         
         batch_reward = batch_reward.clamp(-1.1)
-        current_q = self.online_net(batch_state).gather(1, batch_action)            
+        # TODO(piyush) remove
+        current_q = self.online_net(batch_state, state_embeddings=state_embeddings).gather(1, batch_action)
         next_q = batch_reward + (1 - batch_done) * self.GAMMA * next_q_values
         loss = F.mse_loss(current_q, next_q)
         self.optimizer.zero_grad()
@@ -230,8 +273,14 @@ class AgentDQN(Agent):
             episodes_reward = []
             episodes_loss = []
             while(not done):
+                # TODO(piyush) remove
+                state_embeddings = None
+                if self.video_predictor:
+                    state_embeddings = self.video_predictor.encode(state.unsqueeze(0).repeat((1, 3, 1, 1, 1)))
+
                 # select and perform action
-                action = self.make_action(state)
+                # TODO(piyush) Should we pass state embeddings through target network too?
+                action = self.make_action(state, state_embeddings=state_embeddings)
                 next_state, reward, done, _ = self.env.step(action)
                 episodes_reward.append(reward)
                 total_reward.append(reward)
@@ -240,15 +289,23 @@ class AgentDQN(Agent):
                 next_state = next_state.cuda() if use_cuda else next_state
 
                 # TODO(piyush) remove
+                if self.video_predictor and self.finetune_vp:
+                    pred_frame, pred_reward = self.video_predictor.decode(
+                        state_embeddings, action=action)
+                    vp_loss = (torch.square(pred_frame - next_state).mean() +
+                               torch.square(pred_reward - reward).mean())
+                    self.video_predictor.optimizer.zero_grad()
+                    vp_loss.backward()
+                    self.video_predictor.optimizer.step()
                 if save_data:
                     import pickle
                     save = {
-                        "state":                state.cpu().numpy(), 
-                        "next_state":           next_state.cpu().numpy(), 
+                        "state":                state.cpu().numpy(),
+                        "next_state":           next_state.cpu().numpy(),
                         "action":               action,
                         "reward":               reward,
                         "done":                 done,
-                        "episodes_done_num":    episodes_done_num, 
+                        "episodes_done_num":    episodes_done_num,
                         "step":                 self.steps,
                     }
                     save_buffer.append(save)
