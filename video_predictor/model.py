@@ -101,6 +101,7 @@ class VideoPredictor(nn.Module):
 
 def get_video_predictor(chkpt=None, distributed=False, pretrain=True, small=False):
     if small:
+        print("Using small VideoPredictor")
         cfg = Config.fromfile(SMALL_CONFIG_FILE)
     else:
         cfg = Config.fromfile(CONFIG_FILE)

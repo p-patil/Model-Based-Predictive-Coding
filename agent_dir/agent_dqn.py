@@ -42,8 +42,11 @@ class DQN(nn.Module):
             self.fc_advantage = nn.Linear(512, num_actions)
 
         if "VP" in os.environ and "SIM" not in os.environ:
+            in_channels = 2048
+            if "SMALL" in os.environ:
+                in_channels = 1536
             self.vp_transform = nn.ConvTranspose2d(
-                in_channels=2048, out_channels=64, kernel_size=7)
+                in_channels=in_channels, out_channels=64, kernel_size=7)
             self.conv3 = nn.Conv2d(128, 64, kernel_size=3, stride=1)
         elif "CONCAT_ZERO" in os.environ:
             self.conv3 = nn.Conv2d(128, 64, kernel_size=3, stride=1)
@@ -135,7 +138,10 @@ class AgentDQN(Agent):
         # TODO(piyush) remove
         if "VP" in os.environ:
             import video_predictor.model
-            self.video_predictor = video_predictor.model.get_video_predictor(chkpt=os.environ["VP"])
+            self.video_predictor = video_predictor.model.get_video_predictor(
+                chkpt=os.environ["VP"], 
+                small=(os.environ["SMALL"].lower() == "true"),
+            )
             if use_cuda:
                 self.video_predictor = self.video_predictor.cuda()
             print("CREATED VIDEO PREDICTOR")
@@ -278,7 +284,7 @@ class AgentDQN(Agent):
             buffer_len = 1000
             save_buffer = []
         if "LOG_FILE" in os.environ:
-            LOG_FILE = open(os.environ["LOG_FILE"], "r")
+            LOG_FILE = open(os.environ["LOG_FILE"], "w")
             print("SAVING LOGS TO", LOG_FILE)
             moving_avg_logs = []
         else:
@@ -293,25 +299,21 @@ class AgentDQN(Agent):
             episodes_reward = []
             episodes_loss = []
             while(not done):
-                # TODO(piyush) remove
                 state_embeddings = None
                 if self.simulation is None and self.video_predictor:
                     state_embeddings = self.video_predictor.encode(state.unsqueeze(0).repeat((1, 3, 1, 1, 1)))
 
                 # select and perform action
-                # TODO(piyush) Should we pass state embeddings through target network too?
                 action = self.make_action(state, state_embeddings=state_embeddings)
                 next_state, reward, done, _ = self.env.step(action)
                 episodes_reward.append(reward)
                 total_reward.append(reward)
-                # # process new state
-                # next_state = torch.from_numpy(next_state).permute(2,0,1).unsqueeze(0)
-                # next_state = next_state.cuda() if use_cuda else next_state
 
                 # TODO(piyush) remove
                 moving_avg_logs.append({
+                    "simulation": False,
                     "episode": episodes_done_num,
-                    "step": step,
+                    "step": self.steps,
                     "action": action,
                     "true_reward": reward,
                 })
@@ -320,6 +322,7 @@ class AgentDQN(Agent):
                 # TODO(piyush) remove
                 if self.simulation is not None and random.random() < self.simulation:
                     old_next_state = next_state
+                    old_reward = reward
                     with torch.no_grad():
                         assert self.video_predictor
                         pred_frame, pred_reward = self.video_predictor.forward(
@@ -328,9 +331,11 @@ class AgentDQN(Agent):
                         next_state = pred_frame
                         reward = pred_reward.squeeze().item()
 
+                    pred_frame = pred_frame.cpu().squeeze().permute(1, 2, 0)
                     log["video_predictor_state_mse"] = torch.square(pred_frame - old_next_state).mean().item()
-                    log["video_predictor_reward_err"] = abs(reward - pred_reward)
+                    log["video_predictor_reward_err"] = abs(old_reward - reward)
                     log["video_predictor_reward"] = reward
+                    log["simulation"] = True
 
                     if not use_cuda:
                         next_state = next_state.cpu()
@@ -392,7 +397,7 @@ class AgentDQN(Agent):
             
             avg_ep_loss = sum(episodes_loss)/len(episodes_loss) if len(episodes_loss) > 0 else 0
 
-            print('Episode: %d | Steps: %d/%d | Avg reward: %f | Loss: %f'% 
+            print('Episode: %d | Steps: %d/%d | Reward: %f | Loss: %f'% 
                  (episodes_done_num, self.steps, self.num_timesteps, 
                   # sum(episodes_reward), avg_ep_loss),end='\r')
                   sum(episodes_reward), avg_ep_loss)) # TODO(piyush) remove
@@ -426,10 +431,18 @@ class AgentDQN(Agent):
                 # TODO(piyush) remove
                 if LOG_FILE is not None:
                     log_str = f"Averaged over {len(moving_avg_logs)} steps:"
-                    for key in ("true_reward", "video_predictor_state_mse",
-                                "video_predictor_reward_err", "video_predictor_state_reward"):
-                        avg = sum([l[key] for l in moving_avg_logs]) / len(moving_avg_logs)
+                    logs = [l for l in moving_avg_logs if l["simulation"]]
+                    keys = ["true_reward"]
+                    if self.simulation:
+                        keys.extend(["video_predictor_state_mse", "video_predictor_reward_err", "video_predictor_reward"])
+                    else:
+                        logs = moving_avg_logs
+
+                    for key in keys:
+                        avg = sum([l[key] for l in logs]) / len(logs)
                         log_str = f"{log_str} {key}: {avg},"
+
+                    LOG_FILE.write(log_str + '\n')
                     print(log_str)
                     moving_avg_logs = []
 
