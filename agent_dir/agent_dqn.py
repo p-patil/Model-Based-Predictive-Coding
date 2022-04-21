@@ -41,7 +41,7 @@ class DQN(nn.Module):
             self.fc_value = nn.Linear(512, 1)
             self.fc_advantage = nn.Linear(512, num_actions)
 
-        if "VP" in os.environ:
+        if "VP" in os.environ and "SIM" not in os.environ:
             self.vp_transform = nn.ConvTranspose2d(
                 in_channels=2048, out_channels=64, kernel_size=7)
             self.conv3 = nn.Conv2d(128, 64, kernel_size=3, stride=1)
@@ -142,10 +142,16 @@ class AgentDQN(Agent):
 
             self.finetune_vp = "FT" in os.environ
             if self.finetune_vp:
+                raise NotImplementedError()
                 print("FINE TUNING VIDEO PREDICTOR")
                 self.video_predictor.train()
             else:
                 self.video_predictor.eval()
+
+            self.simulation = None
+            if "SIM" in os.environ:
+                self.simulation = float(os.environ["SIM"])
+                print("TRAINING IN SIMULATION WITH PROB", self.simulation)
         else:
             print("NOT USING VIDEO PREDICTOR")
             self.video_predictor = None
@@ -169,6 +175,9 @@ class AgentDQN(Agent):
         self.steps = 0 # num. of passed steps. this may be useful in controlling exploration
         self.eps_min = 0.025
         self.eps_max = 1.0
+        if "EPS_MAX" in os.environ: # TODO(piyush) remove
+            self.eps_max = float(os.environ["EPS_MAX"])
+            print(f"SETTING EPSILON MAX TO", self.eps_max)
         self.eps_step = 200000
         self.plot = {'steps':[], 'reward':[]}
 
@@ -224,16 +233,16 @@ class AgentDQN(Agent):
 
         # TODO(piyush) remove
         state_embeddings = None
-        if self.video_predictor:
+        if self.simulation is None and self.video_predictor:
             state_embeddings = self.video_predictor.encode(batch_state.unsqueeze(1).repeat(((1, 3, 1, 1, 1))))
-            if self.finetune_vp:
-                pred_frame, pred_reward = self.video_predictor.decode(
-                    state_embeddings, action=action)
-                vp_loss = (torch.square(pred_frame - batch_next).mean() +
-                           torch.square(pred_reward - batch_reward).mean())
-                self.video_predictor.optimizer.zero_grad()
-                vp_loss.backward()
-                self.video_predictor.optimizer.step()
+            # if self.finetune_vp:
+                # pred_frame, pred_reward = self.video_predictor.decode(
+                    # state_embeddings, action=action)
+                # vp_loss = (torch.square(pred_frame - batch_next).mean() +
+                           # torch.square(pred_reward - batch_reward).mean())
+                # self.video_predictor.optimizer.zero_grad()
+                # vp_loss.backward()
+                # self.video_predictor.optimizer.step()
 
         # TODO(piyush) Do we need to add state embeddings here?
         if self.dqn_type=='DoubleDQN' or self.dqn_type == 'DDDQN':
@@ -268,6 +277,12 @@ class AgentDQN(Agent):
             os.makedirs(save_path, exist_ok=True)
             buffer_len = 1000
             save_buffer = []
+        if "LOG_FILE" in os.environ:
+            LOG_FILE = open(os.environ["LOG_FILE"], "r")
+            print("SAVING LOGS TO", LOG_FILE)
+            moving_avg_logs = []
+        else:
+            LOG_FILE = None
 
         while(True):
             state = self.env.reset()
@@ -280,7 +295,7 @@ class AgentDQN(Agent):
             while(not done):
                 # TODO(piyush) remove
                 state_embeddings = None
-                if self.video_predictor:
+                if self.simulation is None and self.video_predictor:
                     state_embeddings = self.video_predictor.encode(state.unsqueeze(0).repeat((1, 3, 1, 1, 1)))
 
                 # select and perform action
@@ -289,19 +304,50 @@ class AgentDQN(Agent):
                 next_state, reward, done, _ = self.env.step(action)
                 episodes_reward.append(reward)
                 total_reward.append(reward)
-                # process new state
-                next_state = torch.from_numpy(next_state).permute(2,0,1).unsqueeze(0)
-                next_state = next_state.cuda() if use_cuda else next_state
+                # # process new state
+                # next_state = torch.from_numpy(next_state).permute(2,0,1).unsqueeze(0)
+                # next_state = next_state.cuda() if use_cuda else next_state
 
                 # TODO(piyush) remove
-                if self.video_predictor and self.finetune_vp:
-                    pred_frame, pred_reward = self.video_predictor.decode(
-                        state_embeddings, action=action)
-                    vp_loss = (torch.square(pred_frame - next_state).mean() +
-                               torch.square(pred_reward - reward).mean())
-                    self.video_predictor.optimizer.zero_grad()
-                    vp_loss.backward()
-                    self.video_predictor.optimizer.step()
+                moving_avg_logs.append({
+                    "episode": episodes_done_num,
+                    "step": step,
+                    "action": action,
+                    "true_reward": reward,
+                })
+                log = moving_avg_logs[-1]
+
+                # TODO(piyush) remove
+                if self.simulation is not None and random.random() < self.simulation:
+                    old_next_state = next_state
+                    with torch.no_grad():
+                        assert self.video_predictor
+                        pred_frame, pred_reward = self.video_predictor.forward(
+                            state.unsqueeze(0).repeat((1, 3, 1, 1, 1)),
+                            action=torch.tensor([action], device="cuda"))
+                        next_state = pred_frame
+                        reward = pred_reward.squeeze().item()
+
+                    log["video_predictor_state_mse"] = torch.square(pred_frame - old_next_state).mean().item()
+                    log["video_predictor_reward_err"] = abs(reward - pred_reward)
+                    log["video_predictor_reward"] = reward
+
+                    if not use_cuda:
+                        next_state = next_state.cpu()
+                else:
+                    # process new state
+                    next_state = torch.from_numpy(next_state).permute(2,0,1).unsqueeze(0)
+                    next_state = next_state.cuda() if use_cuda else next_state
+
+                # TODO(piyush) remove
+                # if self.video_predictor and self.finetune_vp:
+                    # pred_frame, pred_reward = self.video_predictor.decode(
+                        # state_embeddings, action=action)
+                    # vp_loss = (torch.square(pred_frame - next_state).mean() +
+                               # torch.square(pred_reward - reward).mean())
+                    # self.video_predictor.optimizer.zero_grad()
+                    # vp_loss.backward()
+                    # self.video_predictor.optimizer.step()
                 if save_data:
                     import pickle
                     save = {
@@ -331,9 +377,16 @@ class AgentDQN(Agent):
                     loss = self.update()
                     episodes_loss.append(loss)
                     total_loss.append(loss)
+
+                    log["loss"] = loss # TODO(piyush) remove
                 # update target network
                 if self.steps > self.learning_start and self.steps % self.target_update_freq == 0:
                     self.target_net.load_state_dict(self.online_net.state_dict())
+
+                # TODO(piyush) remove
+                if LOG_FILE is not None:
+                    LOG_FILE.write(str(log) + "\n")
+
                 # save the model
                 self.steps += 1
             
@@ -341,7 +394,8 @@ class AgentDQN(Agent):
 
             print('Episode: %d | Steps: %d/%d | Avg reward: %f | Loss: %f'% 
                  (episodes_done_num, self.steps, self.num_timesteps, 
-                  sum(episodes_reward), avg_ep_loss),end='\r')
+                  # sum(episodes_reward), avg_ep_loss),end='\r')
+                  sum(episodes_reward), avg_ep_loss)) # TODO(piyush) remove
 
             self.plot['steps'].append(episodes_done_num)
             self.plot['reward'].append(sum(episodes_reward))
@@ -369,10 +423,23 @@ class AgentDQN(Agent):
                 total_reward = []
                 total_loss = []
 
+                # TODO(piyush) remove
+                if LOG_FILE is not None:
+                    log_str = f"Averaged over {len(moving_avg_logs)} steps:"
+                    for key in ("true_reward", "video_predictor_state_mse",
+                                "video_predictor_reward_err", "video_predictor_state_reward"):
+                        avg = sum([l[key] for l in moving_avg_logs]) / len(moving_avg_logs)
+                        log_str = f"{log_str} {key}: {avg},"
+                    print(log_str)
+                    moving_avg_logs = []
+
             episodes_done_num += 1
 
             if self.steps > self.num_timesteps:
                 break
+
+        if LOG_FILE is not None: # TODO(piyush) remove
+            LOG_FILE.close()
 
         self.save(os.path.join(self.model_dir,'e{}_model.cpt'.format(episodes_done_num)))
         with open(os.path.join(self.model_dir, 'plot.json'), 'w') as f:

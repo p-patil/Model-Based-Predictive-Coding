@@ -67,7 +67,7 @@ class VideoPredictor(nn.Module):
 
     def decode(self, x, action=None):
         if action is not None:
-            action = action.unsqueeze(1).float()
+            action = action.unsqueeze(-1).float()
             action_embedding = self.action_encoder(action) # shape (batch_size, 2048)
             x = action_embedding.unsqueeze(-1).unsqueeze(-1) * x
 
