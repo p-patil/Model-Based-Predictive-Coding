@@ -430,7 +430,6 @@ class AgentDQN(Agent):
 
                 # TODO(piyush) remove
                 if LOG_FILE is not None:
-                    log_str = f"Averaged over {len(moving_avg_logs)} steps:"
                     logs = [l for l in moving_avg_logs if l["simulation"]]
                     keys = ["true_reward"]
                     if self.simulation:
@@ -438,8 +437,9 @@ class AgentDQN(Agent):
                     else:
                         logs = moving_avg_logs
 
+                    log_str = f"Averaged over {self.display_freq} episodes:"
                     for key in keys:
-                        avg = sum([l[key] for l in logs]) / len(logs)
+                        avg = sum([l[key] for l in logs]) / self.display_freq
                         log_str = f"{log_str} {key}: {avg},"
 
                     LOG_FILE.write(log_str + '\n')
