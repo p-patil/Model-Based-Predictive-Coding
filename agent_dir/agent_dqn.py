@@ -41,13 +41,16 @@ class DQN(nn.Module):
             self.fc_value = nn.Linear(512, 1)
             self.fc_advantage = nn.Linear(512, num_actions)
 
-        if "VP" in os.environ and "SIM" not in os.environ:
-            in_channels = 2048
-            if "SMALL" in os.environ:
-                in_channels = 1536
+        in_channels = 2048
+        if "SMALL" in os.environ:
+            in_channels = 1536
+        if "VP" in os.environ and "SIM" not in os.environ and "SIM_EMB" not in os.environ:
             self.vp_transform = nn.ConvTranspose2d(
                 in_channels=in_channels, out_channels=64, kernel_size=7)
             self.conv3 = nn.Conv2d(128, 64, kernel_size=3, stride=1)
+        elif "SIM_EMB" in os.environ:
+            self.conv1 = nn.ConvTranspose2d(
+                in_channels=in_channels, out_channels=32, kernel_size=8, stride=6)
         elif "CONCAT_ZERO" in os.environ:
             self.conv3 = nn.Conv2d(128, 64, kernel_size=3, stride=1)
 
@@ -56,6 +59,7 @@ class DQN(nn.Module):
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
         if state_embeddings is not None:
+            assert "SIM_EMB" not in os.environ
             emb = self.vp_transform(state_embeddings)
             x = torch.concat([x, emb], dim=1)
         elif "CONCAT_ZERO" in os.environ:
@@ -144,23 +148,28 @@ class AgentDQN(Agent):
             )
             if use_cuda:
                 self.video_predictor = self.video_predictor.cuda()
+            self.video_predictor.eval()
             print("CREATED VIDEO PREDICTOR")
 
-            self.finetune_vp = "FT" in os.environ
-            if self.finetune_vp:
-                raise NotImplementedError()
-                print("FINE TUNING VIDEO PREDICTOR")
-                self.video_predictor.train()
-            else:
-                self.video_predictor.eval()
-
-            self.simulation = None
-            if "SIM" in os.environ:
-                self.simulation = float(os.environ["SIM"])
-                print("TRAINING IN SIMULATION WITH PROB", self.simulation)
+            # self.finetune_vp = "FT" in os.environ
+            # if self.finetune_vp:
+                # raise NotImplementedError()
+                # print("FINE TUNING VIDEO PREDICTOR")
+                # self.video_predictor.train()
+            # else:
+                # self.video_predictor.eval()
         else:
             print("NOT USING VIDEO PREDICTOR")
             self.video_predictor = None
+        self.simulation = None
+        if "SIM" in os.environ:
+            assert self.video_predictor is not None
+            self.simulation = float(os.environ["SIM"])
+            print("TRAINING IN SIMULATION WITH PROB", self.simulation)
+        self.simulation_emb = "SIM_EMB" in os.environ
+        if self.simulation_emb:
+            assert self.video_predictor is not None
+            print("TRAINING IN SIMULATION EMBEDDING SPACE")
 
         if args.test_dqn:
             self.load(args.model_path)
@@ -215,6 +224,7 @@ class AgentDQN(Agent):
 
     def make_action(self, state, test=False, state_embeddings=None):
         if test:
+            assert "SIM_EMB" not in os.environ # TODO(piyush) remove
             state = torch.from_numpy(state).permute(2,0,1).unsqueeze(0)
             state = state.cuda() if use_cuda else state
             with torch.no_grad():
@@ -224,7 +234,10 @@ class AgentDQN(Agent):
             if random.random() > self.epsilon(self.steps):  
                 with torch.no_grad():
                     # TODO(piyush) remove
-                    action = self.online_net(state, state_embeddings=state_embeddings).max(1)[1].item()
+                    if "SIM_EMB" in os.environ:
+                        action = self.online_net(state_embeddings, state_embeddings=None).max(1)[1].item()
+                    else:
+                        action = self.online_net(state, state_embeddings=state_embeddings).max(1)[1].item()
             else:
                 action = random.randrange(self.num_actions)
 
@@ -241,6 +254,7 @@ class AgentDQN(Agent):
         state_embeddings = None
         if self.simulation is None and self.video_predictor:
             state_embeddings = self.video_predictor.encode(batch_state.unsqueeze(1).repeat(((1, 3, 1, 1, 1))))
+            next_embeddings = self.video_predictor.encode(batch_next.unsqueeze(1).repeat(((1, 3, 1, 1, 1))))
             # if self.finetune_vp:
                 # pred_frame, pred_reward = self.video_predictor.decode(
                     # state_embeddings, action=action)
@@ -250,17 +264,26 @@ class AgentDQN(Agent):
                 # vp_loss.backward()
                 # self.video_predictor.optimizer.step()
 
-        # TODO(piyush) Do we need to add state embeddings here?
         if self.dqn_type=='DoubleDQN' or self.dqn_type == 'DDDQN':
-            next_q_actions = self.online_net(batch_next, state_embeddings=state_embeddings).detach().max(1)[1].unsqueeze(1)
-            next_q_values = self.target_net(batch_next, state_embeddings=state_embeddings).gather(1,next_q_actions)
+            assert "SIM_EMB" not in os.environ # TODO(piyush) remove
+            next_q_actions = self.online_net(batch_next, state_embeddings=next_embeddings).detach().max(1)[1].unsqueeze(1)
+            next_q_values = self.target_net(batch_next, state_embeddings=next_embeddings).gather(1,next_q_actions)
         else:
-            next_q_values =  self.target_net(batch_next, state_embeddings=state_embeddings).detach()
+            # next_q_values =  self.target_net(batch_next, state_embeddings=next_embeddings).detach()
+            # TODO(piyush) remove
+            if "SIM_EMB" in os.environ:
+                next_q_values =  self.target_net(next_embeddings, state_embeddings=None).detach()
+            else:
+                next_q_values =  self.target_net(batch_next, state_embeddings=next_embeddings).detach()
+
             next_q_values = next_q_values.max(1)[0].unsqueeze(1)
         
         batch_reward = batch_reward.clamp(-1.1)
         # TODO(piyush) remove
-        current_q = self.online_net(batch_state, state_embeddings=state_embeddings).gather(1, batch_action)
+        if "SIM_EMB" in os.environ:
+            current_q = self.online_net(state_embeddings, state_embeddings=None).gather(1, batch_action)
+        else:
+            current_q = self.online_net(batch_state, state_embeddings=state_embeddings).gather(1, batch_action)
         next_q = batch_reward + (1 - batch_done) * self.GAMMA * next_q_values
         loss = F.mse_loss(current_q, next_q)
         self.optimizer.zero_grad()
@@ -312,6 +335,7 @@ class AgentDQN(Agent):
                 # TODO(piyush) remove
                 moving_avg_logs.append({
                     "simulation": False,
+                    "simulation_emb": False,
                     "episode": episodes_done_num,
                     "step": self.steps,
                     "action": action,
@@ -320,14 +344,20 @@ class AgentDQN(Agent):
                 log = moving_avg_logs[-1]
 
                 # TODO(piyush) remove
-                if self.simulation is not None and random.random() < self.simulation:
+                sim = self.simulation is not None and random.random() < self.simulation
+                if sim or self.simulation_emb:
                     old_next_state = next_state
                     old_reward = reward
                     with torch.no_grad():
                         assert self.video_predictor
-                        pred_frame, pred_reward = self.video_predictor.forward(
-                            state.unsqueeze(0).repeat((1, 3, 1, 1, 1)),
-                            action=torch.tensor([action], device="cuda"))
+                        if sim:
+                            x = state.unsqueeze(0).repeat((1, 3, 1, 1, 1))
+                            pred_frame, pred_reward = self.video_predictor.forward(
+                                x, action=torch.tensor([action], device="cuda"))
+                        elif self.simulation_emb:
+                            x = state_embeddings
+                            pred_frame, pred_reward = self.video_predictor.decode(
+                                x, action=torch.tensor([action], device="cuda"))
                         next_state = pred_frame
                         reward = pred_reward.squeeze().item()
 
@@ -335,7 +365,8 @@ class AgentDQN(Agent):
                     log["video_predictor_state_mse"] = torch.square(pred_frame - old_next_state).mean().item()
                     log["video_predictor_reward_err"] = abs(old_reward - reward)
                     log["video_predictor_reward"] = reward
-                    log["simulation"] = True
+                    log["simulation"] = sim
+                    log["simulation_emb"] = self.simulation_emb
 
                     if not use_cuda:
                         next_state = next_state.cpu()
@@ -345,14 +376,6 @@ class AgentDQN(Agent):
                     next_state = next_state.cuda() if use_cuda else next_state
 
                 # TODO(piyush) remove
-                # if self.video_predictor and self.finetune_vp:
-                    # pred_frame, pred_reward = self.video_predictor.decode(
-                        # state_embeddings, action=action)
-                    # vp_loss = (torch.square(pred_frame - next_state).mean() +
-                               # torch.square(pred_reward - reward).mean())
-                    # self.video_predictor.optimizer.zero_grad()
-                    # vp_loss.backward()
-                    # self.video_predictor.optimizer.step()
                 if save_data:
                     import pickle
                     save = {
