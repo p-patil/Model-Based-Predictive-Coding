@@ -7,12 +7,13 @@ import torch.optim as optim
 import torch.nn as nn
 import json
 import os
+import sys 
 
 from agent_dir.agent import Agent
 from environment import Environment
 
 from collections import deque, namedtuple
-
+import cv2
 use_cuda = torch.cuda.is_available()
 
 #DDQN
@@ -144,7 +145,7 @@ class AgentDQN(Agent):
             import video_predictor.model
             self.video_predictor = video_predictor.model.get_video_predictor(
                 chkpt=os.environ["VP"], 
-                small=(os.environ["SMALL"].lower() == "true"),
+                small=(os.environ["SMALL"].lower() == "true") if "SMALL" in os.environ else False,
             )
             if use_cuda:
                 self.video_predictor = self.video_predictor.cuda()
@@ -162,6 +163,7 @@ class AgentDQN(Agent):
             print("NOT USING VIDEO PREDICTOR")
             self.video_predictor = None
         self.simulation = None
+
         if "SIM" in os.environ:
             assert self.video_predictor is not None
             self.simulation = float(os.environ["SIM"])
@@ -231,7 +233,7 @@ class AgentDQN(Agent):
                 # TODO(piyush) remove
                 action = self.online_net(state, state_embeddings=state_embeddings).max(1)[1].item()
         else:            
-            if random.random() > self.epsilon(self.steps):  
+            if random.random() > self.epsilon(self.steps) or "SAVE_VIDEO_DIR" in os.environ:  
                 with torch.no_grad():
                     # TODO(piyush) remove
                     if "SIM_EMB" in os.environ:
@@ -297,6 +299,7 @@ class AgentDQN(Agent):
         episodes_done_num = 1 # passed episodes
         total_reward = [] # compute average reward
         total_loss = []
+        moving_avg_logs = []
 
         # TODO(piyush) remove
         save_data = "SAVE_PATH" in os.environ
@@ -309,7 +312,6 @@ class AgentDQN(Agent):
         if "LOG_FILE" in os.environ:
             LOG_FILE = open(os.environ["LOG_FILE"], "w")
             print("SAVING LOGS TO", LOG_FILE)
-            moving_avg_logs = []
         else:
             LOG_FILE = None
 
@@ -329,6 +331,22 @@ class AgentDQN(Agent):
                 # select and perform action
                 action = self.make_action(state, state_embeddings=state_embeddings)
                 next_state, reward, done, _ = self.env.step(action)
+                # SAVE STATE FOR VIDEO
+                if "SAVE_VIDEO_DIR" in os.environ:
+                    if episodes_done_num > 5:
+                        sys.exit()
+                    if not os.path.exists(os.environ["SAVE_VIDEO_DIR"]):
+                        os.makedirs(os.environ["SAVE_VIDEO_DIR"])
+
+                    fp = f'{os.environ["SAVE_VIDEO_DIR"]}/e{episodes_done_num}_s{self.steps}.png'
+                    img = state.squeeze()[0].cpu().numpy() * 256
+                    cv2.imwrite(fp, img)
+                    next_state = torch.from_numpy(next_state).permute(2,0,1).unsqueeze(0)
+                    next_state = next_state.cuda() if use_cuda else next_state
+                    state = next_state
+                    self.steps += 1
+                    continue 
+
                 episodes_reward.append(reward)
                 total_reward.append(reward)
 
@@ -401,7 +419,7 @@ class AgentDQN(Agent):
                 # move to the next state
                 state = next_state
                 # Perform one step of the optimization
-                if self.steps > self.learning_start and self.steps % self.train_freq == 0:
+                if self.steps > self.learning_start and self.steps % self.train_freq == 0 and "SAVE_VIDEO_DIR" not in os.environ:
                     loss = self.update()
                     episodes_loss.append(loss)
                     total_loss.append(loss)
