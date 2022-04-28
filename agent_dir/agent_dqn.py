@@ -363,6 +363,7 @@ class AgentDQN(Agent):
 
                 # TODO(piyush) remove
                 sim = self.simulation is not None and random.random() < self.simulation
+                vp_input = "VP_INPUT" in os.environ
                 if sim or self.simulation_emb:
                     old_next_state = next_state
                     old_reward = reward
@@ -376,8 +377,13 @@ class AgentDQN(Agent):
                             x = state_embeddings
                             pred_frame, pred_reward = self.video_predictor.decode(
                                 x, action=torch.tensor([action], device="cuda"))
-                        next_state = pred_frame
-                        reward = pred_reward.squeeze().item()
+
+                        if not vp_input:
+                            next_state = pred_frame
+                            reward = pred_reward.squeeze().item()
+                        else:
+                            next_state = torch.from_numpy(next_state).permute(2,0,1).unsqueeze(0)
+                            next_state = next_state.cuda() if use_cuda else next_state
 
                     pred_frame = pred_frame.cpu().squeeze().permute(1, 2, 0)
                     log["video_predictor_state_mse"] = torch.square(pred_frame - old_next_state).mean().item()
@@ -385,6 +391,7 @@ class AgentDQN(Agent):
                     log["video_predictor_reward"] = reward
                     log["simulation"] = sim
                     log["simulation_emb"] = self.simulation_emb
+                    log["vp_input"] = vp_input
 
                     if not use_cuda:
                         next_state = next_state.cpu()
