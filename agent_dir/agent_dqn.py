@@ -361,6 +361,12 @@ class AgentDQN(Agent):
                 })
                 log = moving_avg_logs[-1]
 
+                if "SAVE_VP_REWARD" in os.environ:
+                    pred_frame, pred_reward = self.video_predictor.forward(
+                        state.unsqueeze(0).repeat((1, 3, 1, 1, 1))
+                        action=torch.tensor([action], device="cuda"))
+                    log["video_predictor_reward"] = pred_reward
+
                 # TODO(piyush) remove
                 sim = self.simulation is not None and random.random() < self.simulation
                 vp_input = "VP_INPUT" in os.environ
