@@ -315,6 +315,9 @@ class AgentDQN(Agent):
         else:
             LOG_FILE = None
 
+        if "SAVE_VP_REWARD" in os.environ:
+            print("SAVING VP REWARD")
+
         while(True):
             state = self.env.reset()
             # State: (80,80,4) --> (1,4,80,80)
@@ -363,7 +366,7 @@ class AgentDQN(Agent):
 
                 if "SAVE_VP_REWARD" in os.environ:
                     pred_frame, pred_reward = self.video_predictor.forward(
-                        state.unsqueeze(0).repeat((1, 3, 1, 1, 1))
+                        state.unsqueeze(0).repeat((1, 3, 1, 1, 1)),
                         action=torch.tensor([action], device="cuda"))
                     log["video_predictor_reward"] = pred_reward
 
